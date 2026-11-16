@@ -1,0 +1,16 @@
+PCMonitorX build-environment discovery
+Date: 2026-11-11 (client local date)
+
+Python launcher: `py` not present on PATH.
+Python command: Windows Store `python.exe` alias was found, but execution failed with "The file cannot be accessed by the system."
+Arduino CLI: not present on PATH.
+PlatformIO CLI (`pio`): not present on PATH.
+OpenSCAD CLI: not present on PATH.
+LibreHardwareMonitor DLL: not found at `C:\Program Files\LibreHardwareMonitor\LibreHardwareMonitorLib.dll`.
+
+NVIDIA direct query: PASS (exit 0)
+Command: `nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total,fan.speed,clocks.gr --format=csv,noheader,nounits`
+Output: NVIDIA GeForce GTX 1660 Ti, 46.30, 5, 1244, 6144, 0, 420
+Units by column: name, °C, %, MiB, MiB, %, MHz. This validates the local nvidia-smi command and target GPU response; the Python wrapper/API path was not executable here.
+
+Python package/dependency checks, psutil CPU collection, LibreHardwareMonitor CPU/disk collection, API smoke execution, Python NVIDIA wrapper parsing, ESP32 compilation, and OpenSCAD rendering were not run here. The direct NVIDIA query above is the only live sensor test performed. See testing.md for the remaining target-PC steps and physical checks to record.

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+windows_server/libs/*.dll
+esp32_firmware/PCMonitorX/config.h
+esp32_firmware/.pio/
+*.bin
+*.elf
+*.hex
+*.uf2
+esp32_firmware/build/
+esp32_firmware/legacy_oled/PCMonitorX_OLED/config.h
+**/config.h
+!**/config.h.example

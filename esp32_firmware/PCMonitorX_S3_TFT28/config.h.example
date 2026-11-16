@@ -1,0 +1,27 @@
+#pragma once
+// Copy to config.h (same folder). config.h is git-ignored; never share it.
+#define PCMONITORX_WIFI_SSID "your-2.4GHz-wifi-name"
+#define PCMONITORX_WIFI_PASSWORD "your-wifi-password"
+#define PCMONITORX_SERVER_HOST "192.168.1.100"  // Windows PC LAN IPv4
+#define PCMONITORX_SERVER_PORT 8765
+#define PCMONITORX_API_TOKEN ""
+
+
+// Panel: PCMX_PANEL_ILI9341 (most 2.8" SPI boards with SD slot) or PCMX_PANEL_ST7789.
+#define PCMONITORX_PANEL PCMX_PANEL_ILI9341
+#define PCMONITORX_PANEL_INVERT 0  // set 1 if colours look inverted (common on ST7789)
+#define PCMONITORX_PANEL_BGR 0     // set 1 if red and blue are swapped
+#define PCMONITORX_TOUCH_ENABLED 1
+#define PCMONITORX_ROTATION 0     // portrait; set 2 if the picture is upside-down in the case
+
+// Pins (ESP32-S3 SuperMini). TFT and touch share SCK/MOSI/MISO.
+#define PCMONITORX_PIN_SCK 12
+#define PCMONITORX_PIN_MOSI 11
+#define PCMONITORX_PIN_MISO 13
+#define PCMONITORX_PIN_TFT_CS 10
+#define PCMONITORX_PIN_TFT_DC 9
+#define PCMONITORX_PIN_TFT_RST 8
+#define PCMONITORX_PIN_TFT_BL -1   // LED pin wired to 3V3
+#define PCMONITORX_PIN_TOUCH_CS 6
+#define PCMONITORX_PIN_TOUCH_IRQ 5
+#define PCMONITORX_BUTTON_PIN 0    // BOOT button

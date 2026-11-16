@@ -1,0 +1,5 @@
+Flask>=3.0,<4.0
+psutil>=5.9,<8.0
+waitress>=3.0,<4.0
+# Optional Windows sensor bridge. Install into the project venv if using LibreHardwareMonitor:
+pythonnet>=3.0,<4.0; platform_system == "Windows"
