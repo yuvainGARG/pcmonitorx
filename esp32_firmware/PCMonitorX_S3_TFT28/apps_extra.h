@@ -317,3 +317,135 @@ void tap(int x, int y) {
   saveSettings();
 }
 }  // namespace padsui
+
+// =============================================================== Weather (from the PC server, Open-Meteo)
+namespace wx {
+enum Kind { K_SUN, K_PART, K_CLOUD, K_FOG, K_RAIN, K_SNOW, K_STORM };
+Kind kindOf(int c) {
+  if (c <= 1) return K_SUN;
+  if (c == 2) return K_PART;
+  if (c == 3) return K_CLOUD;
+  if (c == 45 || c == 48) return K_FOG;
+  if ((c >= 71 && c <= 77) || c == 85 || c == 86) return K_SNOW;
+  if (c >= 95) return K_STORM;
+  return K_RAIN;
+}
+void cloud(int cx, int cy, int s, uint16_t col) {
+  g->fillCircle(cx - s * 5 / 10, cy, s * 4 / 10, col);
+  g->fillCircle(cx + s * 4 / 10, cy + s / 20, s * 35 / 100, col);
+  g->fillCircle(cx - s / 20, cy - s * 3 / 10, s * 5 / 10, col);
+  g->fillRoundRect(cx - s * 9 / 10, cy, s * 17 / 10, s * 4 / 10, s / 5, col);
+}
+void sun(int cx, int cy, int s, bool day) {
+  if (!day) {  // crescent moon
+    g->fillCircle(cx, cy, s * 6 / 10, rgb(230, 230, 200));
+    g->fillCircle(cx + s * 3 / 10, cy - s * 2 / 10, s * 5 / 10, C_CARD);
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    float a = i * PI / 4;
+    wline(cx + cosf(a) * s * 0.65f, cy + sinf(a) * s * 0.65f, cx + cosf(a) * s * 0.95f, cy + sinf(a) * s * 0.95f,
+          fmaxf(1.0f, s / 14.0f), C_WARN);
+  }
+  g->fillCircle(cx, cy, s * 5 / 10, C_WARN);
+}
+// Weather icon about 2*s wide, centred on cx, cy (drawn on a C_CARD background).
+void icon(int code, bool day, int cx, int cy, int s) {
+  Kind k = kindOf(code);
+  uint16_t cl = rgb(200, 205, 220), dark = rgb(120, 125, 145);
+  switch (k) {
+    case K_SUN: sun(cx, cy, s, day); break;
+    case K_PART:
+      sun(cx - s * 3 / 10, cy - s * 3 / 10, s * 7 / 10, day);
+      cloud(cx + s / 10, cy + s * 2 / 10, s * 8 / 10, cl);
+      break;
+    case K_CLOUD: cloud(cx, cy, s, cl); break;
+    case K_FOG:
+      for (int i = 0; i < 4; i++)
+        g->fillRoundRect(cx - s * 8 / 10 + (i % 2) * s / 5, cy - s / 2 + i * s / 3, s * 14 / 10, max(2, s / 8), 2, cl);
+      break;
+    default:  // rain, snow, storm
+      cloud(cx, cy - s / 5, s * 9 / 10, k == K_STORM ? dark : cl);
+      if (k == K_STORM) {
+        g->fillTriangle(cx + s / 10, cy + s / 10, cx - s * 3 / 10, cy + s * 6 / 10, cx, cy + s * 6 / 10, C_WARN);
+        g->fillTriangle(cx - s / 10, cy + s * 5 / 10, cx + s * 2 / 10, cy + s * 5 / 10, cx - s * 2 / 10, cy + s, C_WARN);
+      } else {
+        for (int i = -1; i <= 1; i++) {
+          int x = cx + i * s * 4 / 10, y = cy + s * 4 / 10;
+          if (k == K_SNOW) g->fillCircle(x, y + s / 6, max(1, s / 9), C_TEXT);
+          else wline(x + s / 10, y, x - s / 10, y + s * 4 / 10, fmaxf(1.0f, s / 12.0f), C_CPU);
+        }
+      }
+  }
+}
+void frame() {
+  const auto &w = m.wx;
+  if (!w.have) {
+    card(4, APP_Y + 4, 232, 130);
+    text("No weather yet", 120, APP_Y + 34, &fonts::Font4, C_TEXT, textdatum_t::middle_center);
+    text("Set your city on the PC in", 120, APP_Y + 66, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+    text("windows_server\\settings.json", 120, APP_Y + 86, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+    text("then restart the server", 120, APP_Y + 106, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+    return;
+  }
+  char b[48];
+  int y = APP_Y + 4;  // now
+  card(4, y, 232, 112);
+  snprintf(b, sizeof(b), "%s%s%s", w.city, w.country[0] ? ", " : "", w.country);
+  text(b, 12, y + 6, &fonts::Font2, C_TEXT);
+  snprintf(b, sizeof(b), "at %s", w.updated);
+  text(b, 228, y + 8, &fonts::Font0, C_DIM, textdatum_t::top_right);
+  icon(w.code, w.isDay, 52, y + 62, 30);
+  tempText(w.temp, 156, y + 50, &fonts::FreeSansBold24pt7b, C_TEXT, true);
+  text(w.desc, 156, y + 82, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+  snprintf(b, sizeof(b), "feels %.0f   humidity %d%%   wind %.0f km/h", tconv(w.feels), (int)w.hum, w.wind);
+  text(b, 120, y + 101, &fonts::Font0, C_DIM, textdatum_t::middle_center);
+
+  y = APP_Y + 120;  // next 12 hours
+  card(4, y, 232, 88, "NEXT 12 HOURS");
+  if (w.nh > 1) {
+    float lo = 1e9, hi = -1e9;
+    for (int i = 0; i < w.nh; i++) { lo = fminf(lo, w.hr[i].t); hi = fmaxf(hi, w.hr[i].t); }
+    if (hi - lo < 4) { float mid = (hi + lo) / 2; lo = mid - 2; hi = mid + 2; }
+    int px = -1, py = -1, step = 216 / (w.nh - 1);
+    for (int i = 0; i < w.nh; i++) {
+      int x = 12 + i * step, ty = y + 50 - (int)((w.hr[i].t - lo) / (hi - lo) * 26);
+      if (px >= 0) { g->drawLine(px, py, x, ty, C_WARN); g->drawLine(px, py + 1, x, ty + 1, C_WARN); }
+      g->fillCircle(x, ty, 2, C_WARN);
+      if (i % 2 == 0) {
+        snprintf(b, sizeof(b), "%.0f", tconv(w.hr[i].t));
+        text(b, x, ty - 9, &fonts::Font0, C_TEXT, textdatum_t::middle_center);
+        text(w.hr[i].h, x, y + 66, &fonts::Font0, C_DIM, textdatum_t::middle_center);
+        if (w.hr[i].p >= 20) {
+          snprintf(b, sizeof(b), "%d%%", w.hr[i].p);
+          text(b, x, y + 78, &fonts::Font0, C_CPU, textdatum_t::middle_center);
+        }
+      }
+      px = x;
+      py = ty;
+    }
+  }
+
+  y = APP_Y + 212;  // next 5 days
+  card(4, y, 232, H - y - 4);
+  float lo = 1e9, hi = -1e9;
+  for (int i = 0; i < w.nd; i++) { lo = fminf(lo, w.dy[i].mn); hi = fmaxf(hi, w.dy[i].mx); }
+  float span = fmaxf(1.0f, hi - lo);
+  for (int i = 0; i < w.nd; i++) {
+    int ry = y + 10 + i * 16;
+    text(w.dy[i].day, 12, ry, &fonts::Font2, C_TEXT, textdatum_t::middle_left);
+    icon(w.dy[i].c, true, 64, ry, 7);
+    snprintf(b, sizeof(b), "%.0f", tconv(w.dy[i].mn));
+    text(b, 96, ry, &fonts::Font0, C_DIM, textdatum_t::middle_right);
+    int x0 = 100 + (int)((w.dy[i].mn - lo) / span * 80), x1 = 100 + (int)((w.dy[i].mx - lo) / span * 80);
+    g->fillRoundRect(100, ry - 2, 84, 4, 2, C_TRACK);
+    g->fillRoundRect(x0, ry - 2, max(4, x1 - x0 + 4), 4, 2, C_UP);
+    snprintf(b, sizeof(b), "%.0f", tconv(w.dy[i].mx));
+    text(b, 190, ry, &fonts::Font0, C_TEXT, textdatum_t::middle_left);
+    if (w.dy[i].p >= 20) {
+      snprintf(b, sizeof(b), "%d%%", w.dy[i].p);
+      text(b, 228, ry, &fonts::Font0, C_CPU, textdatum_t::middle_right);
+    }
+  }
+}
+}  // namespace wx

@@ -17,10 +17,22 @@ disk), PERF (history graph), GPU, NET, DISK, APPS, SET.
 
 | Tools | Touch games | Tilt games (Bluetooth controllers) |
 |---|---|---|
-| Clock (digital/analog), Stopwatch, Timer, Calculator, Calendar, Processes (top apps by CPU), Cores (per-thread load), System, Paint, Alerts log, Controllers | Snake, Bricks, Merge, Hopper, XO, Mines, Memory, Reflex, Simon, Slide | Dodge, Catch (1P/VS), Highway, Star Shooter (solo/co-op), Co-op, Cave Flyer (1P/VS), Pong (vs display/2P) |
+| Clock (digital/analog), Weather (now, 12 h, 5 days), Stopwatch, Timer, Calculator, Calendar, Processes (top apps by CPU), Cores (per-thread load), System, Paint, Alerts log, Controllers | Snake, Bricks, Merge, Hopper, XO, Mines, Memory, Reflex, Simon, Slide | Dodge, Catch (1P/VS), Highway, Star Shooter (solo/co-op), Co-op, Cave Flyer (1P/VS), Pong (vs display/2P) |
 
 Also: hot-CPU/GPU alert (flashing header), screen sleep, idle clock, settings and high scores saved on
 the board.
+
+## Download
+
+Ready-made files are on the **[Releases page](https://github.com/yuvainGARG/pcmonitorx/releases/latest)**:
+
+| File | What it is |
+|---|---|
+| `PCMonitorX-Server-Windows.zip` | The PC server: unzip, double-click `Install.bat`, then `Start Server.bat` |
+| `PCMonitorX-Display-Firmware.zip` | Ready-made display firmware for an ESP32-S3 + 2.8" ILI9341 touch screen. Flash it from the browser; on first start it shows a QR code and you set your WiFi and PC address from your phone |
+| `PCMonitorX-Case.zip` | 3D-printable portrait case, back lid and desk stand (STL + Fusion 360) |
+
+Different screen or pins? Build from source (below).
 
 ## Tilt controllers
 
@@ -57,7 +69,8 @@ Wiring, build and flash steps: **[documentation/esp32s3_tft28.md](documentation/
    ```
 
    It listens on TCP 8765. Allow it through Windows Firewall for your local subnet only, and optionally
-   run `install_autostart.ps1` to start it at log-on.
+   run `install_autostart.ps1` to start it at log-on. For weather, copy `windows_server/settings.example.json`
+   to `settings.json` and set your city.
 2. **Firmware:** copy `esp32_firmware/PCMonitorX_S3_TFT28/config.h.example` to `config.h`, fill in your
    2.4 GHz WiFi and the PC's IP, then build with Arduino (ESP32 core 3.x, LovyanGFX, ArduinoJson 7,
    partition scheme **Huge APP**) and flash. Exact commands are in the
@@ -69,7 +82,13 @@ Wiring, build and flash steps: **[documentation/esp32s3_tft28.md](documentation/
 `GET /api/pc` (compact metrics for the display), `GET /api/sensors` (flat list with units),
 `GET /api/status` (per-source availability and errors), `GET /api` (endpoint guide).
 Details: [documentation/api.md](documentation/api.md). Missing sensors are JSON `null`; the server keeps
-running. CPU temperature needs LibreHardwareMonitor; NVIDIA GPU stats come from `nvidia-smi`.
+running. NVIDIA GPU stats come from `nvidia-smi`.
+
+**CPU temperature** (Windows only lets admin programs read it): copy the `.dll` files from
+[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases) into
+`windows_server/libs/`, install its [PawnIO](https://github.com/namazso/PawnIO.Setup/releases) driver, and
+run the server as administrator. `install_autostart.ps1` run from an administrator PowerShell does that and
+starts the server with no window at log-on.
 
 ## Project map
 

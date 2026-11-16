@@ -12,6 +12,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 
 #if __has_include("config.h")
 #include "config.h"
@@ -49,16 +51,16 @@ static const char *PAGE_NAMES[] = {"HOME", "PERF", "GPU", "NET", "DISK", "APPS",
 enum Page { P_HOME, P_PERF, P_GPU, P_NET, P_DISK, P_APPS, P_SET, PAGE_COUNT };
 
 enum AppId {
-  A_CLOCK, A_STOPWATCH, A_TIMER, A_CALC, A_CALENDAR, A_PROCS, A_CORES, A_SYSTEM, A_PAINT, A_ALERTS, A_PADS,  // tools
+  A_CLOCK, A_WEATHER, A_STOPWATCH, A_TIMER, A_CALC, A_CALENDAR, A_PROCS, A_CORES, A_SYSTEM, A_PAINT, A_ALERTS, A_PADS,  // tools
   A_SNAKE, A_BRICKS, A_MERGE, A_HOPPER, A_XO, A_MINES, A_MEMORY, A_REFLEX, A_SIMON, A_SLIDE,                // touch games
   A_DODGE, A_CATCH, A_HIGHWAY, A_SHOOTER, A_COOP, A_CAVE, A_PONG,                                               // tilt games
   APP_COUNT
 };
-static const char *APP_NAMES[] = {"Clock", "Stopwatch", "Timer", "Calculator", "Calendar", "Processes", "Cores", "System",
+static const char *APP_NAMES[] = {"Clock", "Weather", "Stopwatch", "Timer", "Calculator", "Calendar", "Processes", "Cores", "System",
                                   "Paint", "Alerts", "Controllers",
                                   "Snake", "Bricks", "Merge", "Hopper", "XO", "Mines", "Memory", "Reflex", "Simon", "Slide",
                                   "Dodge", "Catch", "Highway", "Shooter", "Co-op", "Cave", "Pong"};
-static const uint16_t APP_COLORS[] = {rgb(0, 190, 255), rgb(80, 160, 255), rgb(255, 190, 40), rgb(255, 150, 40),
+static const uint16_t APP_COLORS[] = {rgb(0, 190, 255), rgb(90, 170, 255), rgb(80, 160, 255), rgb(255, 190, 40), rgb(255, 150, 40),
                                       rgb(240, 240, 245), rgb(0, 210, 190), rgb(90, 200, 255), rgb(160, 170, 200),
                                       rgb(255, 80, 160), rgb(255, 90, 90), rgb(255, 120, 60),
                                       rgb(60, 210, 120), rgb(255, 150, 40), rgb(190, 110, 255), rgb(255, 210, 60),
@@ -123,6 +125,14 @@ struct Metrics {
   int procCount = 0;
   float cores[MAX_CORES];
   int coreCount = 0;
+  struct Weather {  // from the PC server (Open-Meteo); have = false until the server sends it
+    bool have = false;
+    char city[24], country[4], desc[24], updated[6];
+    float temp, feels, hum, wind;
+    int code, isDay, nh, nd;
+    struct { char h[3]; float t; int p, c; } hr[12];
+    struct { char day[6]; float mx, mn; int p, c; } dy[5];
+  } wx;
 } m;
 
 struct Peaks {
@@ -163,6 +173,27 @@ static void openApp(int id);
 static void closeApp();
 static void wake();
 static void saveSettings();
+
+// ---------------------------------------------------------------- WiFi + PC address
+// Built-in values come from config.h. The phone setup page (portal) can override them; those are saved in
+// Preferences ("net"), so one prebuilt firmware works for everyone.
+struct NetCfg {
+  char ssid[33], pass[65], host[40];
+  uint16_t port;
+};
+static NetCfg net;
+static const char *PLACEHOLDER_SSID = "your-2.4GHz-wifi-name";
+static void loadNet() {
+  memset(&net, 0, sizeof(net));
+  strlcpy(net.ssid, PCMONITORX_WIFI_SSID, sizeof(net.ssid));
+  strlcpy(net.pass, PCMONITORX_WIFI_PASSWORD, sizeof(net.pass));
+  strlcpy(net.host, PCMONITORX_SERVER_HOST, sizeof(net.host));
+  net.port = PCMONITORX_SERVER_PORT;
+  prefs.begin("pcmx_tft", true);
+  if (prefs.getBytesLength("net") == sizeof(net)) prefs.getBytes("net", &net, sizeof(net));
+  prefs.end();
+}
+static bool netConfigured() { return net.ssid[0] && strcmp(net.ssid, PLACEHOLDER_SSID) != 0; }
 
 // ---------------------------------------------------------------- helpers
 static float num(JsonVariantConst v) { return v.is<float>() || v.is<int>() ? v.as<float>() : NAN; }
@@ -448,53 +479,71 @@ static void drawTabs() {
 }
 
 // ---------------------------------------------------------------- dashboard pages
+// HOME layout (y offsets inside the body): gauges 4..122, RAM 126..174, weather 178..218, net+disk 222..266
+static const int HOME_GAUGE_Y = 4, HOME_GAUGE_H = 118, HOME_RAM_Y = 126, HOME_WX_Y = 178, HOME_NET_Y = 222;
+namespace wx { void icon(int code, bool day, int cx, int cy, int s); }  // defined in apps_extra.h
+
 static void gaugeCard(int x, const char *label, float load, float temp, uint16_t col) {
-  int y = BODY_Y + 4, w = 114, h = 132;
+  int y = BODY_Y + HOME_GAUGE_Y, w = 114, h = HOME_GAUGE_H;
   card(x, y, w, h);
-  int cx = x + w / 2, cy = y + 60;
-  ring(cx, cy, 48, 9, load, col);
+  int cx = x + w / 2, cy = y + 52;
+  ring(cx, cy, 44, 8, load, col);
   char b[12];
   if (ok(load)) snprintf(b, sizeof(b), "%.0f%%", load);
   else snprintf(b, sizeof(b), "--");
-  text(b, cx, cy - 7, &fonts::Font4, C_TEXT, textdatum_t::middle_center);
-  tempText(temp, cx, cy + 15, &fonts::Font2, tempLevel(temp), true);
-  text(label, cx, y + h - 12, &fonts::Font2, col, textdatum_t::middle_center);
+  text(b, cx, cy - 6, &fonts::Font4, C_TEXT, textdatum_t::middle_center);
+  tempText(temp, cx, cy + 14, &fonts::Font2, tempLevel(temp), true);
+  text(label, cx, y + h - 10, &fonts::Font2, col, textdatum_t::middle_center);
 }
 
 static void pageHome() {
   gaugeCard(4, "CPU", m.cpuUsage, m.cpuTemp, C_CPU);
   gaugeCard(122, "GPU", m.gpuUsage, m.gpuTemp, C_GPU);
 
-  char b[32];
-  int y = BODY_Y + 140;
-  card(4, y, 232, 56);
-  text("RAM", 10, y + 5, &fonts::Font0, C_DIM);
+  char b[40];
+  int y = BODY_Y + HOME_RAM_Y;
+  card(4, y, 232, 48);
+  text("RAM", 10, y + 4, &fonts::Font0, C_DIM);
   if (ok(m.ramUsed)) snprintf(b, sizeof(b), "%.1f / %.0f GB", m.ramUsed / 1024, m.ramTotal / 1024);
   else snprintf(b, sizeof(b), "--");
-  text(b, 230, y + 5, &fonts::Font0, C_TEXT, textdatum_t::top_right);
-  bar(10, y + 15, 220, 8, m.ramUsage, C_RAM);
-  text("VRAM", 10, y + 30, &fonts::Font0, C_DIM);
+  text(b, 230, y + 4, &fonts::Font0, C_TEXT, textdatum_t::top_right);
+  bar(10, y + 13, 220, 7, m.ramUsage, C_RAM);
+  text("VRAM", 10, y + 26, &fonts::Font0, C_DIM);
   if (ok(m.vramUsed) && ok(m.vramTotal)) snprintf(b, sizeof(b), "%.1f / %.0f GB", m.vramUsed / 1024, m.vramTotal / 1024);
   else snprintf(b, sizeof(b), "--");
-  text(b, 230, y + 30, &fonts::Font0, C_TEXT, textdatum_t::top_right);
+  text(b, 230, y + 26, &fonts::Font0, C_TEXT, textdatum_t::top_right);
   float vp = ok(m.vramUsed) && ok(m.vramTotal) && m.vramTotal > 0 ? m.vramUsed * 100 / m.vramTotal : NAN;
-  bar(10, y + 40, 220, 8, vp, C_GPU);
+  bar(10, y + 35, 220, 7, vp, C_GPU);
 
-  y = BODY_Y + 200;
-  card(4, y, 232, 62);
+  y = BODY_Y + HOME_WX_Y;  // weather (tap for the Weather app)
+  card(4, y, 232, 40);
+  if (m.wx.have) {
+    wx::icon(m.wx.code, m.wx.isDay, 26, y + 20, 13);
+    tempText(m.wx.temp, 48, y + 8, &fonts::Font4, C_TEXT, false);
+    text(m.wx.desc, 118, y + 11, &fonts::Font2, C_TEXT, textdatum_t::middle_left);
+    if (m.wx.nd) {
+      snprintf(b, sizeof(b), "H %.0f  L %.0f  %s", tconv(m.wx.dy[0].mx), tconv(m.wx.dy[0].mn), m.wx.city);
+      text(b, 118, y + 29, &fonts::Font0, C_DIM, textdatum_t::middle_left);
+    }
+  } else {
+    text("Weather: set your city on the PC", 120, y + 20, &fonts::Font0, C_DIM, textdatum_t::middle_center);
+  }
+
+  y = BODY_Y + HOME_NET_Y;
+  card(4, y, 232, BODY_H - HOME_NET_Y);
   char d[16], u[16];
   fmtRate(d, sizeof(d), m.downBps);
   fmtRate(u, sizeof(u), m.upBps);
-  g->fillTriangle(10, y + 9, 18, y + 9, 14, y + 15, C_DOWN);
-  text(d, 22, y + 5, &fonts::Font2, C_TEXT);
-  g->fillTriangle(124, y + 15, 132, y + 15, 128, y + 9, C_UP);
-  text(u, 136, y + 5, &fonts::Font2, C_TEXT);
+  g->fillTriangle(10, y + 8, 18, y + 8, 14, y + 14, C_DOWN);
+  text(d, 22, y + 4, &fonts::Font2, C_TEXT);
+  g->fillTriangle(124, y + 14, 132, y + 14, 128, y + 8, C_UP);
+  text(u, 136, y + 4, &fonts::Font2, C_TEXT);
   if (m.diskCount) {
     snprintf(b, sizeof(b), "%s  %.0f / %.0f GB", m.disks[0].name, m.disks[0].used, m.disks[0].total);
-    text(b, 10, y + 28, &fonts::Font0, C_DIM);
+    text(b, 10, y + 23, &fonts::Font0, C_DIM);
     snprintf(b, sizeof(b), "%.0f%%", m.disks[0].usage);
-    text(b, 230, y + 28, &fonts::Font0, level(m.disks[0].usage), textdatum_t::top_right);
-    bar(10, y + 40, 220, 8, m.disks[0].usage, level(m.disks[0].usage));
+    text(b, 230, y + 23, &fonts::Font0, level(m.disks[0].usage), textdatum_t::top_right);
+    bar(10, y + 33, 220, 6, m.disks[0].usage, level(m.disks[0].usage));
   }
 }
 
@@ -621,7 +670,7 @@ static void drawSystem() {
   statLine(12, y + 44, "DATE", m.date[0] ? m.date : "--");
   snprintf(b, sizeof(b), ok(m.cpuFreq) ? "%.0f MHz" : "--", m.cpuFreq);
   statLine(126, y + 44, "CPU CLOCK", b);
-  snprintf(b, sizeof(b), "%s:%d", PCMONITORX_SERVER_HOST, PCMONITORX_SERVER_PORT);
+  snprintf(b, sizeof(b), "%s:%u", net.host, (unsigned)net.port);
   statLine(12, y + 72, "SERVER", b);
   snprintf(b, sizeof(b), "%lu ms, HTTP %d", (unsigned long)lastLatency, lastHttp);
   statLine(12, y + 100, "API", b, lastHttp == 200 ? C_GOOD : C_WARN);
@@ -1807,6 +1856,7 @@ static void closeApp() {
 static void appFrame() {
   switch (app) {
     case A_CLOCK: clk::frame(); break;
+    case A_WEATHER: wx::frame(); break;
     case A_STOPWATCH: sw::frame(); break;
     case A_TIMER: tmr::frame(); break;
     case A_CALC: calc::frame(); break;
@@ -1892,6 +1942,10 @@ static void drawIcon(int id, int cx, int cy) {
     case A_CLOCK:
       g->fillCircle(cx, cy, 12, K); g->fillCircle(cx, cy, 9, A);
       wline(cx, cy, cx, cy - 7, 1.3f, K); wline(cx, cy, cx + 5, cy, 1.3f, K);
+      break;
+    case A_WEATHER:
+      g->fillCircle(cx - 5, cy - 5, 8, C_WARN);
+      wx::cloud(cx + 3, cy + 4, 13, C_TEXT);
       break;
     case A_STOPWATCH:
       g->fillRect(cx - 3, cy - 14, 6, 4, K); g->fillCircle(cx, cy + 2, 11, K); g->fillCircle(cx, cy + 2, 8, A);
@@ -2032,7 +2086,7 @@ static void appsTap(int x, int y) {
 }
 
 // ---------------------------------------------------------------- Settings page
-enum SetRow { S_REFRESH, S_CYCLE, S_UNIT, S_ACCENT, S_ALERT, S_SLEEP, S_IDLE, S_CLK24, S_START, S_BRIGHT, S_CAL, S_PEAKS, S_SCORES, S_ROWS };
+enum SetRow { S_REFRESH, S_CYCLE, S_UNIT, S_ACCENT, S_ALERT, S_SLEEP, S_IDLE, S_CLK24, S_START, S_BRIGHT, S_WIFI, S_CAL, S_PEAKS, S_SCORES, S_ROWS };
 static const int ROW_H = 28, ROW_Y0 = BODY_Y + 4, SET_VIS = (BODY_H - 4) / ROW_H;
 static bool rowVisible(int r) {
   if (r == S_BRIGHT) return PCMONITORX_PIN_TFT_BL >= 0;
@@ -2056,6 +2110,7 @@ static void rowText(int r, char *label, char *val) {
     case S_CLK24: strcpy(label, "Clock format"); strcpy(val, st.clock24 ? "24 h" : "12 h"); break;
     case S_START: strcpy(label, "Start page"); strcpy(val, PAGE_NAMES[st.startPage % P_SET]); break;
     case S_BRIGHT: strcpy(label, "Brightness"); sprintf(val, "%u %%", (unsigned)(BRIGHT[st.bright] * 100 / 255)); break;
+    case S_WIFI: strcpy(label, "WiFi & PC setup"); strcpy(val, "Open"); break;
     case S_CAL: strcpy(label, "Calibrate touch"); strcpy(val, "Run"); break;
     case S_PEAKS: strcpy(label, "Reset peaks & totals"); strcpy(val, "Reset"); break;
     case S_SCORES: strcpy(label, "Reset high scores"); strcpy(val, "Reset"); break;
@@ -2101,7 +2156,7 @@ static void render() {
   }
   if (!haveData && page < P_APPS) {
     g->fillRoundRect(20, 135, 200, 50, 8, C_CARD2);
-    text(WiFi.status() == WL_CONNECTED ? "Waiting for PC server..." : "Connecting to WiFi...", 120, 160, &fonts::Font2,
+    text(!netConfigured() ? "WiFi not set up: SET > WiFi setup" : WiFi.status() == WL_CONNECTED ? "Waiting for PC server..." : "Connecting to WiFi...", 120, 160, &fonts::Font2,
          C_TEXT, textdatum_t::middle_center);
   }
   drawTabs();
@@ -2176,6 +2231,14 @@ static void applySetting(int r) {
 #if PCMONITORX_TOUCH_ENABLED
     case S_CAL: runCalibration(); break;
 #endif
+    case S_WIFI:  // restart into the phone setup page
+      prefs.begin("pcmx_tft", false);
+      prefs.putBool("portal", true);
+      prefs.end();
+      Serial.println("[setup] restarting into WiFi setup");
+      delay(200);
+      ESP.restart();
+      break;
     case S_PEAKS: pk.reset(); totalDown = totalUp = 0; break;
     case S_SCORES: memset(hs, 0, sizeof(hs)); saveHs(); break;
   }
@@ -2185,11 +2248,11 @@ static void applySetting(int r) {
 
 // ---------------------------------------------------------------- network (runs in netTask on core 0)
 static void wifiService() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED || !netConfigured()) return;
   if (lastWifiAttempt && millis() - lastWifiAttempt < WIFI_RETRY_MS) return;
   lastWifiAttempt = millis();
   WiFi.disconnect();
-  WiFi.begin(PCMONITORX_WIFI_SSID, PCMONITORX_WIFI_PASSWORD);
+  WiFi.begin(net.ssid, net.pass);
   Serial.println("[wifi] connecting");
 }
 
@@ -2238,6 +2301,32 @@ static void parse(const JsonDocument &d, float dtSec, uint32_t latency) {
     if (m.coreCount >= MAX_CORES) break;
     m.cores[m.coreCount++] = num(v);
   }
+  JsonObjectConst w = d["weather"];
+  m.wx.have = !w.isNull();
+  if (m.wx.have) {
+    auto &x = m.wx;
+    strlcpy(x.city, w["city"] | "", sizeof(x.city));
+    strlcpy(x.country, w["country"] | "", sizeof(x.country));
+    strlcpy(x.desc, w["desc"] | "", sizeof(x.desc));
+    strlcpy(x.updated, w["updated"] | "", sizeof(x.updated));
+    x.temp = num(w["temp_c"]); x.feels = num(w["feels_c"]); x.hum = num(w["humidity"]); x.wind = num(w["wind_kmh"]);
+    x.code = w["code"] | 0;
+    x.isDay = w["is_day"] | 1;
+    x.nh = 0;
+    for (JsonObjectConst h : w["hourly"].as<JsonArrayConst>()) {
+      if (x.nh >= 12) break;
+      auto &o = x.hr[x.nh++];
+      strlcpy(o.h, h["h"] | "", sizeof(o.h));
+      o.t = num(h["t"]); o.p = h["p"] | 0; o.c = h["c"] | 0;
+    }
+    x.nd = 0;
+    for (JsonObjectConst dd : w["daily"].as<JsonArrayConst>()) {
+      if (x.nd >= 5) break;
+      auto &o = x.dy[x.nd++];
+      strlcpy(o.day, dd["day"] | "", sizeof(o.day));
+      o.mx = num(dd["max"]); o.mn = num(dd["min"]); o.p = dd["p"] | 0; o.c = dd["c"] | 0;
+    }
+  }
   uint64_t ep = d["local_epoch_ms"] | (uint64_t)0;
   if (ep) {
     ep += latency / 2;  // the server stamped it about half a round trip ago
@@ -2256,7 +2345,7 @@ static bool fetch() {
   WiFiClient client;
   HTTPClient http;
   char url[96];
-  snprintf(url, sizeof(url), "http://%s:%d/api/pc", PCMONITORX_SERVER_HOST, PCMONITORX_SERVER_PORT);
+  snprintf(url, sizeof(url), "http://%s:%u/api/pc", net.host, (unsigned)net.port);
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(client, url)) return false;
@@ -2341,9 +2430,10 @@ static void dashTap(int x, int y) {
     }
     case P_APPS: appsTap(x, y); break;
     case P_HOME:
-      if (y < BODY_Y + 136) { if (x < 120) openApp(A_CORES); else goPage(P_GPU); }
-      else if (y < BODY_Y + 198) openApp(A_PROCS);
-      else if (y < BODY_Y + 225) goPage(P_NET);
+      if (y < BODY_Y + HOME_RAM_Y) { if (x < 120) openApp(A_CORES); else goPage(P_GPU); }
+      else if (y < BODY_Y + HOME_WX_Y) openApp(A_PROCS);
+      else if (y < BODY_Y + HOME_NET_Y) openApp(A_WEATHER);
+      else if (y < BODY_Y + HOME_NET_Y + 20) goPage(P_NET);
       else goPage(P_DISK);
       break;
     case P_PERF: openApp(A_CORES); break;
@@ -2495,6 +2585,128 @@ static void eventService() {
   }
 }
 
+// ---------------------------------------------------------------- phone setup page (WiFi + PC address)
+namespace portal {
+WebServer *web = nullptr;
+DNSServer *dns = nullptr;
+String nets;
+bool saved = false;
+const char *AP_NAME = "PCMonitorX-Setup";
+String esc(const char *s) {
+  String o;
+  for (; *s; s++) {
+    if (*s == '&') o += "&amp;";
+    else if (*s == '<') o += "&lt;";
+    else if (*s == '>') o += "&gt;";
+    else if (*s == '"') o += "&quot;";
+    else o += *s;
+  }
+  return o;
+}
+void page() {
+  bool have = netConfigured();
+  String h = F("<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
+               "<title>PCMonitorX setup</title><style>body{font-family:sans-serif;background:#0a0c14;color:#eef;"
+               "max-width:420px;margin:auto;padding:16px}input{width:100%;padding:10px;margin:4px 0 14px;"
+               "border-radius:8px;border:1px solid #445;background:#141a2a;color:#eef;box-sizing:border-box;font-size:16px}"
+               "button{width:100%;padding:12px;border:0;border-radius:8px;background:#00bef0;font-weight:bold;font-size:16px}"
+               "label{font-size:14px;color:#9ab}p{font-size:13px;color:#9ab}</style></head><body>"
+               "<h2>PCMonitorX setup</h2><form method=post action=/save>");
+  h += F("<label>WiFi name (2.4 GHz)</label><input name=s list=nets required autocomplete=off value=\"");
+  h += have ? esc(net.ssid) : String();
+  h += "\"><datalist id=nets>" + nets + "</datalist>";
+  h += F("<label>WiFi password</label><input name=pw type=password autocomplete=off placeholder=\"");
+  h += have ? F("leave empty to keep the saved one") : F("");
+  h += F("\"><label>PC IP address</label><input name=h required inputmode=decimal value=\"");
+  h += have ? esc(net.host) : String();
+  h += F("\" placeholder=\"192.168.1.20\"><label>Server port</label><input name=p type=number value=\"");
+  h += String(net.port ? net.port : 8765);
+  h += F("\"><p>Find the PC's IP with <b>ipconfig</b> on the PC (IPv4 Address). The PCMonitorX server must be "
+         "running there and allowed through the firewall.</p><button>Save and restart</button></form></body></html>");
+  web->send(200, "text/html", h);
+}
+void save() {
+  String s = web->arg("s"), pw = web->arg("pw"), host = web->arg("h");
+  long port = web->arg("p").toInt();
+  s.trim();
+  host.trim();
+  if (!s.length() || !host.length()) { web->send(400, "text/plain", "WiFi name and PC IP are required."); return; }
+  bool same = s == net.ssid;
+  strlcpy(net.ssid, s.c_str(), sizeof(net.ssid));
+  if (pw.length() || !same) strlcpy(net.pass, pw.c_str(), sizeof(net.pass));
+  strlcpy(net.host, host.c_str(), sizeof(net.host));
+  net.port = port > 0 && port < 65536 ? port : 8765;
+  prefs.begin("pcmx_tft", false);
+  prefs.putBytes("net", &net, sizeof(net));
+  prefs.remove("portal");
+  prefs.end();
+  web->send(200, "text/html", F("<html><body style='font-family:sans-serif;background:#0a0c14;color:#eef;padding:20px'>"
+                                "<h2>Saved</h2><p>The display restarts and joins your WiFi. You can close this page.</p></body></html>"));
+  Serial.println("[setup] saved WiFi + PC address");
+  saved = true;
+}
+void drawScreen() {
+  tft.fillScreen(C_BG);
+  tft.setTextDatum(textdatum_t::middle_center);
+  tft.setFont(&fonts::FreeSansBold12pt7b);
+  tft.setTextColor(C_TEXT);
+  tft.drawString("WiFi setup", W / 2, 20);
+  tft.fillRoundRect(52, 38, 136, 136, 8, C_TEXT);
+  tft.qrcode("WIFI:T:nopass;S:PCMonitorX-Setup;;", 56, 42, 128, 3);
+  tft.setFont(&fonts::Font2);
+  tft.setTextColor(C_DIM);
+  tft.drawString("1. Scan with your phone, or join", W / 2, 190);
+  tft.setTextColor(accent());
+  tft.drawString(AP_NAME, W / 2, 208);
+  tft.setTextColor(C_DIM);
+  tft.drawString("2. Open  http://192.168.4.1", W / 2, 232);
+  tft.drawString("3. Enter your WiFi and the PC's IP", W / 2, 254);
+  tft.setFont(&fonts::Font0);
+  tft.drawString("BOOT = skip (games and tools work offline)", W / 2, 300);
+}
+void run() {
+  WiFi.mode(WIFI_AP_STA);  // STA side is needed to list nearby networks
+  int n = WiFi.scanNetworks();
+  nets = "";
+  for (int i = 0; i < n; i++) {
+    String id = WiFi.SSID(i);
+    if (id.length() && nets.indexOf("\"" + esc(id.c_str()) + "\"") < 0) nets += "<option value=\"" + esc(id.c_str()) + "\">";
+  }
+  WiFi.scanDelete();
+  WiFi.softAP(AP_NAME);
+  dns = new DNSServer();
+  dns->start(53, "*", WiFi.softAPIP());  // any address -> this page (phones show "sign in to network")
+  web = new WebServer(80);
+  web->on("/", page);
+  web->on("/save", HTTP_POST, save);
+  web->onNotFound([] {
+    web->sendHeader("Location", "http://192.168.4.1/", true);
+    web->send(302, "text/plain", "");
+  });
+  web->begin();
+  drawScreen();
+  Serial.printf("[setup] join WiFi %s, open http://192.168.4.1 (%d networks found)\n", AP_NAME, n);
+  while (true) {
+    dns->processNextRequest();
+    web->handleClient();
+    if (saved) { delay(1500); ESP.restart(); }
+    if (digitalRead(PCMONITORX_BUTTON_PIN) == LOW) {
+      while (digitalRead(PCMONITORX_BUTTON_PIN) == LOW) delay(10);
+      break;
+    }
+    delay(2);
+  }
+  Serial.println("[setup] skipped");
+  web->stop();
+  dns->stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  prefs.begin("pcmx_tft", false);
+  prefs.remove("portal");
+  prefs.end();
+}
+}  // namespace portal
+
 // ---------------------------------------------------------------- setup / loop
 void setup() {
   Serial.begin(115200);
@@ -2557,6 +2769,12 @@ void setup() {
     }
   }
 #endif
+
+  loadNet();
+  prefs.begin("pcmx_tft", true);
+  bool wantPortal = prefs.getBool("portal", false);
+  prefs.end();
+  if (!netConfigured() || wantPortal) portal::run();  // first start of a prebuilt firmware, or Settings > WiFi setup
 
   esp_task_wdt_add(NULL);
   WiFi.mode(WIFI_STA);

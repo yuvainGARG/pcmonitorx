@@ -77,6 +77,7 @@ Open an app from the APPS tab. To go back, tap the `<` at the top left, press BO
 | Section | App | What it does |
 |---|---|---|
 | Tools | Clock | Digital (with seconds and a CPU/GPU/RAM/net summary) or analog; tap to switch |
+| | Weather | Now (icon, temperature, feels like, humidity, wind), next 12 hours graph with rain chance, next 5 days. The city is set on the PC (see Server changes) |
 | | Stopwatch | Start/stop, laps with splits |
 | | Timer | 1/5/10/25 min presets, ±10 s / ±1 min, pause. When it ends the screen flashes and the Timer opens from anywhere; the header shows the countdown while it runs |
 | | Calculator | + − × ÷, %, ±, delete, chained operations |
@@ -125,6 +126,19 @@ The game rules and numbers follow the arcade's Python code, rescaled for the 240
 - **BOOT button (backup):** short press = next page, long press = Settings. In Settings: short = next row, long = change.
 - **Settings** and the touch calibration are saved in flash (Preferences namespace `pcmx_tft`).
 
+### WiFi and PC setup from a phone
+
+The firmware takes WiFi and the PC address from `config.h`. If those are still the placeholders (the
+ready-made release firmware), or you pick **SET > WiFi & PC setup**, the display starts a setup page:
+
+1. It creates an open WiFi network **PCMonitorX-Setup** and shows a QR code to join it.
+2. On a phone, join it; the setup page opens by itself (or go to `http://192.168.4.1`).
+3. Choose your 2.4 GHz WiFi from the list, type its password, the PC's IP address and port (8765), and
+   save. The display restarts and connects.
+
+Values saved this way are stored on the board and override `config.h`. Press BOOT on the setup screen to
+skip it: the games and tools work without WiFi. Leaving the password empty keeps the saved one.
+
 ### Touch calibration
 
 On first boot the screen says "Tap the screen to calibrate touch". Tap within 6 s, then touch each corner
@@ -148,6 +162,11 @@ touch panel can't block start-up.
 - `processes`: top 6 apps by CPU, grouped by name, with private memory (Processes app). Sampled every 3 s
   in a background thread with one `NtQuerySystemInformation` call (about 8 ms); psutil's per-process
   calls took about 2.5 s of CPU per scan on this PC and made requests time out.
+
+- `weather`: current conditions, 12 hourly and 5 daily forecasts for the city in
+  `windows_server/settings.json` (`{"weather_city": "London"}`, git-ignored; copy
+  `settings.example.json`). Fetched from Open-Meteo (free, no key) every 10 minutes in the background;
+  also at `GET /api/weather`. `PCMONITORX_WEATHER_CITY` overrides the file.
 
 Older servers just leave those spots blank. Restart the "PCMonitorX Monitoring Server" scheduled task after
 updating `app.py`.

@@ -102,6 +102,10 @@ class LibreHardwareMonitor:
             normalized = f"{hw_name} {name}".lower()
             if value is None:
                 continue
+            if stype == "temperature" and value <= 0:
+                # LHM reports 0 when it can't read the sensor (no admin rights or no PawnIO driver).
+                row["value"] = None
+                continue
             if stype == "temperature" and "cpu" in kind:
                 # Prefer package/Tctl readings; otherwise retain the hottest CPU reading.
                 current = result["cpu_temperature_c"]
@@ -407,11 +411,99 @@ class SystemMonitor:
             return self._cache
 
 
+SETTINGS_FILE = Path(__file__).with_name("settings.json")   # git-ignored; see settings.example.json
+WMO = {0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Cloudy", 45: "Fog", 48: "Fog",
+       51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+       61: "Light rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+       71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains", 80: "Light showers", 81: "Showers",
+       82: "Heavy showers", 85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Thunderstorm, hail",
+       99: "Thunderstorm, hail"}
+
+
+def _load_settings() -> dict[str, Any]:
+    try:
+        import json
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+class Weather:
+    """Current weather + 12 h / 5 day forecast for one city from Open-Meteo (free, no API key).
+    Refreshed every 10 minutes in a background thread; requests never wait for it."""
+
+    def __init__(self, city: str, interval: float = 600.0) -> None:
+        self.city = city.strip()
+        self.interval = interval
+        self.data: dict[str, Any] | None = None
+        self.error: str | None = None
+        self._place: dict[str, Any] | None = None
+        if self.city:
+            threading.Thread(target=self._loop, daemon=True, name="weather").start()
+
+    @staticmethod
+    def _get(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        import json
+        import urllib.parse
+        import urllib.request
+        req = urllib.request.Request(url + "?" + urllib.parse.urlencode(params), headers={"User-Agent": "PCMonitorX"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+
+    def _locate(self) -> dict[str, Any]:
+        res = self._get("https://geocoding-api.open-meteo.com/v1/search",
+                        {"name": self.city, "count": 1, "language": "en", "format": "json"}).get("results") or []
+        if not res:
+            raise ValueError(f"city not found: {self.city}")
+        return res[0]
+
+    def _fetch(self) -> dict[str, Any]:
+        self._place = self._place or self._locate()
+        p = self._place
+        f = self._get("https://api.open-meteo.com/v1/forecast", {
+            "latitude": p["latitude"], "longitude": p["longitude"], "timezone": "auto", "forecast_days": 5,
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,"
+                       "precipitation,weather_code,is_day",
+            "hourly": "temperature_2m,precipitation_probability,weather_code",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"})
+        cur, hr, dy = f["current"], f["hourly"], f["daily"]
+        now = cur["time"][:13]                      # "YYYY-MM-DDTHH"
+        start = next((i for i, t in enumerate(hr["time"]) if t[:13] >= now), 0)
+        hourly = [{"h": hr["time"][i][11:13], "t": hr["temperature_2m"][i],
+                   "p": hr["precipitation_probability"][i], "c": hr["weather_code"][i]}
+                  for i in range(start, min(start + 12, len(hr["time"])))]
+        daily = []
+        for i, d in enumerate(dy["time"]):
+            daily.append({"day": "Today" if i == 0 else datetime.strptime(d, "%Y-%m-%d").strftime("%a"),
+                          "max": dy["temperature_2m_max"][i], "min": dy["temperature_2m_min"][i],
+                          "p": dy["precipitation_probability_max"][i], "c": dy["weather_code"][i]})
+        code = cur["weather_code"]
+        import unicodedata                  # the display's fonts are ASCII: "Kraków" -> "Krakow"
+        name = unicodedata.normalize("NFKD", p.get("name", self.city)).encode("ascii", "ignore").decode() or self.city
+        return {"city": name, "country": p.get("country_code", ""),
+                "updated": cur["time"][11:16], "temp_c": cur["temperature_2m"],
+                "feels_c": cur["apparent_temperature"], "humidity": cur["relative_humidity_2m"],
+                "wind_kmh": cur["wind_speed_10m"], "precip_mm": cur["precipitation"], "code": code,
+                "is_day": cur["is_day"], "desc": WMO.get(code, "Weather"),
+                "sunrise": dy["sunrise"][0][11:16], "sunset": dy["sunset"][0][11:16],
+                "hourly": hourly, "daily": daily}
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                self.data = self._fetch()
+                self.error = None
+            except Exception as exc:     # network down, city typo...: keep the last good data
+                self.error = f"{type(exc).__name__}: {exc}"
+            time.sleep(self.interval if self.error is None else 60)
+
+
 def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -> Flask:
     app = Flask(__name__)
     cache_seconds = _finite(os.getenv("PCMONITORX_POLL_SECONDS", "1")) or 1.0
     system_monitor = monitor or SystemMonitor(cache_seconds)
     token = os.environ.get("PCMONITORX_API_TOKEN", "").strip() if token is None else token.strip()
+    weather = Weather(os.environ.get("PCMONITORX_WEATHER_CITY") or str(_load_settings().get("weather_city", "")))
 
     @app.before_request
     def authorize() -> Any:
@@ -427,7 +519,12 @@ def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -
         # Fresh (not cached) local wall clock in ms, so displays can show seconds accurately.
         offset = datetime.now().astimezone().utcoffset()
         pc["local_epoch_ms"] = int((time.time() + (offset.total_seconds() if offset else 0)) * 1000)
+        pc["weather"] = weather.data
         return jsonify(pc)
+
+    @app.get("/api/weather")
+    def api_weather() -> Any:
+        return jsonify({"city": weather.city or None, "weather": weather.data, "error": weather.error})
 
     @app.get("/api/sensors")
     def api_sensors() -> Any:
@@ -447,7 +544,8 @@ def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -
         return jsonify({"name": "PCMonitorX", "version": "1.0.0", "endpoints": {
             "/api/pc": "Current PC metrics; temperatures °C, usages %, frequencies MHz, memory MB, network B/s, uptime seconds.",
             "/api/sensors": "Flattened sensor list; every value carries a unit and availability flag.",
-            "/api/status": "Server and per-source availability, errors, and polling interval."},
+            "/api/status": "Server and per-source availability, errors, and polling interval.",
+            "/api/weather": "Weather for the city in settings.json (Open-Meteo); also included in /api/pc as 'weather'."},
             "missing_values": "Unavailable readings are JSON null; errors are included in /api/status."})
 
     return app
