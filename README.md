@@ -92,3 +92,12 @@ git-ignored. Never commit it or paste it into issues or logs.
 
 Tilt games and controllers come from **[Tilt Arcade](https://github.com/yuvainGARG/tilt-arcade)**
 (pygame games for the Raspberry Pi 5); the display versions are portrait remakes of those games.
+
+## License
+
+Copyright (C) 2026 yuvainGARG
+
+PCMonitorX is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License, version 3 or (at your option) any later version. It comes with no
+warranty. See [LICENSE](LICENSE) for the full text. If you share a modified version, it must also be
+released under the GPL with its source code.
