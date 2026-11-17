@@ -3,3 +3,10 @@ psutil>=5.9,<8.0
 waitress>=3.0,<4.0
 # Optional Windows sensor bridge. Install into the project venv if using LibreHardwareMonitor:
 pythonnet>=3.0,<4.0; platform_system == "Windows"
+# Optional: now playing + media controls (Music app) and album art
+winrt-runtime>=3.0; platform_system == "Windows"
+winrt-Windows.Media.Control>=3.0; platform_system == "Windows"
+winrt-Windows.Foundation>=3.0; platform_system == "Windows"
+winrt-Windows.Storage.Streams>=3.0; platform_system == "Windows"
+pycaw>=20240316; platform_system == "Windows"
+pillow>=10.0

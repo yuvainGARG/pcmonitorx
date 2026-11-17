@@ -1,6 +1,159 @@
-// Calculator, Calendar, Simon, Slide puzzle and the Controllers page.
+// Music (PC media remote), Calculator, Calendar, Simon, Slide puzzle, the Controllers page and Weather.
 // Included from PCMonitorX_S3_TFT28.ino after tilt_games.h.
 #pragma once
+
+// =============================================================== Music: control what's playing on the PC
+// (YouTube Music / YouTube in a browser, the YouTube Music app, Spotify ...) through the PC server.
+namespace music {
+const uint16_t RED = rgb(255, 0, 51), BG = rgb(14, 14, 18), BAR = rgb(70, 70, 80);
+const int ART = 120, ART_X = (W - ART) / 2, ART_Y = APP_Y + 26;
+const int TITLE_Y = APP_Y + 166, ARTIST_Y = APP_Y + 188, PROG_Y = APP_Y + 204, BTN_Y = APP_Y + 242, VOL_Y = APP_Y + 282;
+const int VOL_X0 = 44, VOL_W = 150;
+
+void note(int cx, int cy, uint16_t col) {  // two beamed eighth notes
+  g->fillCircle(cx - 7, cy + 8, 5, col);
+  g->fillCircle(cx + 8, cy + 5, 5, col);
+  g->fillRect(cx - 3, cy - 10, 3, 18, col);
+  g->fillRect(cx + 12, cy - 13, 3, 18, col);
+  wline(cx - 1.5f, cy - 10, cx + 13.5f, cy - 13, 2.5f, col);
+}
+float shownPos() {
+  const auto &x = m.media;
+  if (!ok(x.pos)) return 0;
+  float p = x.pos + (x.status == 1 ? (millis() - x.posAt) / 1000.0f : 0);
+  return ok(x.dur) && x.dur > 0 ? fminf(p, x.dur) : p;
+}
+void fmtT(char *b, size_t n, float s) {
+  int t = ok(s) && s > 0 ? (int)s : 0;
+  if (t >= 3600) snprintf(b, n, "%d:%02d:%02d", t / 3600, t / 60 % 60, t % 60);
+  else snprintf(b, n, "%d:%02d", t / 60, t % 60);
+}
+void send(int cmd, int arg = 0) {
+  mediaArg = arg;
+  mediaCmd = cmd;
+}
+// Text that scrolls sideways when it's wider than the screen.
+void marquee(const char *s, int y, const lgfx::IFont *f, uint16_t col) {
+  g->setFont(f);
+  int w = g->textWidth(s), box = W - 16;
+  if (w <= box) { text(s, W / 2, y, f, col, textdatum_t::middle_center); return; }
+  int gap = 50, off = (millis() / 28) % (w + gap);
+  g->setClipRect(8, y - 16, box, 32);
+  text(s, 8 - off, y, f, col, textdatum_t::middle_left);
+  text(s, 8 - off + w + gap, y, f, col, textdatum_t::middle_left);
+  g->clearClipRect();
+}
+void speaker(int x, int y, bool muted, uint16_t col) {
+  g->fillRect(x, y - 3, 4, 7, col);
+  g->fillTriangle(x + 3, y, x + 10, y - 7, x + 10, y + 7, col);
+  if (muted) { wline(x + 13, y - 4, x + 20, y + 4, 1.2f, RED); wline(x + 13, y + 4, x + 20, y - 4, 1.2f, RED); }
+  else { g->drawArc(x + 9, y, 6, 6, 300, 60, col); g->drawArc(x + 9, y, 10, 10, 300, 60, col); }
+}
+void volumeRow() {
+  const auto &x = m.media;
+  speaker(14, VOL_Y, x.muted, x.muted ? C_DIM : C_TEXT);
+  float pct = x.vol >= 0 ? x.vol : 0;
+  g->fillRoundRect(VOL_X0, VOL_Y - 3, VOL_W, 6, 3, BAR);
+  int kx = VOL_X0 + (int)(VOL_W * pct / 100);
+  g->fillRoundRect(VOL_X0, VOL_Y - 3, kx - VOL_X0, 6, 3, x.muted ? C_DIM : C_TEXT);
+  g->fillCircle(kx, VOL_Y, 7, x.muted ? C_DIM : C_TEXT);
+  char b[8];
+  if (x.vol >= 0) snprintf(b, sizeof(b), "%d", x.vol);
+  else snprintf(b, sizeof(b), "--");
+  text(b, W - 10, VOL_Y, &fonts::Font2, C_DIM, textdatum_t::middle_right);
+}
+void frame() {
+  const auto &x = m.media;
+  g->fillRect(0, APP_Y, W, H - APP_Y, BG);
+  if (!x.have) {
+    note(120, APP_Y + 90, C_DIM);
+    text("Music needs the PC server's", 120, APP_Y + 150, &fonts::Font2, C_TEXT, textdatum_t::middle_center);
+    text("media support (update the server", 120, APP_Y + 170, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+    text("and install requirements.txt)", 120, APP_Y + 190, &fonts::Font2, C_DIM, textdatum_t::middle_center);
+    return;
+  }
+  // source: tap to switch between apps that are playing something
+  text("PLAYING ON YOUR PC", 8, APP_Y + 13, &fonts::Font0, C_DIM, textdatum_t::middle_left);
+  if (x.active) {
+    char b[28];
+    snprintf(b, sizeof(b), x.sources > 1 ? "%s  >" : "%s", x.app);
+    g->setFont(&fonts::Font0);
+    int pw = g->textWidth(b) + 14;
+    g->fillRoundRect(W - 6 - pw, APP_Y + 5, pw, 17, 8, rgb(40, 40, 48));
+    text(b, W - 6 - pw / 2, APP_Y + 13, &fonts::Font0, C_TEXT, textdatum_t::middle_center);
+  }
+  // album art
+  if (x.active && artBuf && artLen && !strcmp(artLoaded, x.artId)) {
+    g->drawJpg(artBuf, artLen, ART_X, ART_Y);
+  } else {
+    g->fillRoundRect(ART_X, ART_Y, ART, ART, 10, rgb(36, 36, 44));
+    note(W / 2, ART_Y + ART / 2, x.active ? RED : C_DIM);
+  }
+  if (!x.active) {
+    text("Nothing playing on the PC", 120, TITLE_Y, &fonts::Font2, C_TEXT, textdatum_t::middle_center);
+    text("Start YouTube Music (or any player)", 120, ARTIST_Y, &fonts::Font0, C_DIM, textdatum_t::middle_center);
+    volumeRow();
+    return;
+  }
+  marquee(x.title[0] ? x.title : "Unknown title", TITLE_Y, &fonts::FreeSansBold9pt7b, C_TEXT);
+  marquee(x.artist, ARTIST_Y, &fonts::Font2, C_DIM);
+  // progress
+  char a[12], b[12];
+  float pos = shownPos();
+  g->fillRoundRect(16, PROG_Y, W - 32, 4, 2, BAR);
+  if (ok(x.dur) && x.dur > 1) {
+    int px = 16 + (int)((W - 32) * constrain(pos / x.dur, 0.0f, 1.0f));
+    g->fillRoundRect(16, PROG_Y, px - 16, 4, 2, RED);
+    g->fillCircle(px, PROG_Y + 2, 5, RED);
+    fmtT(a, sizeof(a), pos);
+    fmtT(b, sizeof(b), x.dur);
+    text(a, 16, PROG_Y + 14, &fonts::Font0, C_DIM, textdatum_t::middle_left);
+    text(b, W - 16, PROG_Y + 14, &fonts::Font0, C_DIM, textdatum_t::middle_right);
+  } else {
+    text(x.status == 1 ? "playing" : x.status == 2 ? "paused" : "", W / 2, PROG_Y + 14, &fonts::Font0, C_DIM,
+         textdatum_t::middle_center);
+  }
+  // previous / play-pause / next
+  uint16_t pc = x.canPrev ? C_TEXT : C_TRACK, nc = x.canNext ? C_TEXT : C_TRACK;
+  g->fillRect(48, BTN_Y - 9, 3, 18, pc);
+  g->fillTriangle(52, BTN_Y, 66, BTN_Y - 9, 66, BTN_Y + 9, pc);
+  g->fillTriangle(64, BTN_Y, 78, BTN_Y - 9, 78, BTN_Y + 9, pc);
+  g->fillTriangle(W - 52, BTN_Y, W - 66, BTN_Y - 9, W - 66, BTN_Y + 9, nc);
+  g->fillTriangle(W - 64, BTN_Y, W - 78, BTN_Y - 9, W - 78, BTN_Y + 9, nc);
+  g->fillRect(W - 51, BTN_Y - 9, 3, 18, nc);
+  g->fillCircle(W / 2, BTN_Y, 26, RED);
+  if (x.status == 1) {
+    g->fillRoundRect(W / 2 - 9, BTN_Y - 11, 6, 22, 2, C_TEXT);
+    g->fillRoundRect(W / 2 + 3, BTN_Y - 11, 6, 22, 2, C_TEXT);
+  } else {
+    g->fillTriangle(W / 2 - 7, BTN_Y - 12, W / 2 - 7, BTN_Y + 12, W / 2 + 12, BTN_Y, C_TEXT);
+  }
+  volumeRow();
+}
+void tap(int px, int py) {
+  auto &x = m.media;
+  if (!x.have) return;
+  if (py < APP_Y + 24 && px > 120) { send(MC_SOURCE); return; }
+  if (py >= VOL_Y - 16) {
+    if (px < 36) { x.muted = !x.muted; send(MC_MUTE); }
+    else if (px >= VOL_X0 - 10 && px <= VOL_X0 + VOL_W + 10) {
+      int lvl = constrain((px - VOL_X0) * 100 / VOL_W, 0, 100);
+      x.vol = lvl;  // show it right away; the server confirms
+      x.muted = false;
+      send(MC_VOLUME, lvl);
+    }
+    return;
+  }
+  if (!x.active || py < BTN_Y - 30 || py > BTN_Y + 30) return;
+  if (px < 90) send(MC_PREV);
+  else if (px > W - 90) send(MC_NEXT);
+  else {
+    if (x.status == 1) x.status = 2;
+    else { x.status = 1; x.posAt = millis(); }
+    send(MC_PLAYPAUSE);
+  }
+}
+}  // namespace music
 
 // =============================================================== Calculator
 namespace calc {

@@ -17,7 +17,7 @@ disk), PERF (history graph), GPU, NET, DISK, APPS, SET.
 
 | Tools | Touch games | Tilt games (Bluetooth controllers) |
 |---|---|---|
-| Clock (digital/analog), Weather (now, 12 h, 5 days), Stopwatch, Timer, Calculator, Calendar, Processes (top apps by CPU), Cores (per-thread load), System, Paint, Alerts log, Controllers | Snake, Bricks, Merge, Hopper, XO, Mines, Memory, Reflex, Simon, Slide | Dodge, Catch (1P/VS), Highway, Star Shooter (solo/co-op), Co-op, Cave Flyer (1P/VS), Pong (vs display/2P) |
+| Music (YouTube Music / Spotify remote for the PC: art, play/pause, skip, volume), Clock (digital/analog), Weather (now, 12 h, 5 days), Stopwatch, Timer, Calculator, Calendar, Processes (top apps by CPU), Cores (per-thread load), System, Paint, Alerts log, Controllers | Snake, Bricks, Merge, Hopper, XO, Mines, Memory, Reflex, Simon, Slide | Dodge, Catch (1P/VS), Highway, Star Shooter (solo/co-op), Co-op, Cave Flyer (1P/VS), Pong (vs display/2P) |
 
 Also: hot-CPU/GPU alert (flashing header), screen sleep, idle clock, settings and high scores saved on
 the board.

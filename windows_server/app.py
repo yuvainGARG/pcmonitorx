@@ -504,6 +504,13 @@ def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -
     system_monitor = monitor or SystemMonitor(cache_seconds)
     token = os.environ.get("PCMONITORX_API_TOKEN", "").strip() if token is None else token.strip()
     weather = Weather(os.environ.get("PCMONITORX_WEATHER_CITY") or str(_load_settings().get("weather_city", "")))
+    media = None
+    if os.name == "nt" and os.environ.get("PCMONITORX_MEDIA", "1") != "0":
+        try:
+            from media import Media
+            media = Media()
+        except Exception:  # optional feature
+            media = None
 
     @app.before_request
     def authorize() -> Any:
@@ -520,11 +527,39 @@ def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -
         offset = datetime.now().astimezone().utcoffset()
         pc["local_epoch_ms"] = int((time.time() + (offset.total_seconds() if offset else 0)) * 1000)
         pc["weather"] = weather.data
+        pc["media"] = media.state if media else None
         return jsonify(pc)
 
     @app.get("/api/weather")
     def api_weather() -> Any:
         return jsonify({"city": weather.city or None, "weather": weather.data, "error": weather.error})
+
+    @app.get("/api/media")
+    def api_media() -> Any:
+        if not media:
+            return jsonify({"available": False, "error": "media controls need Windows and the winrt packages"})
+        return jsonify(dict(media.state, error=media.error))
+
+    @app.get("/api/media/art.jpg")
+    def api_media_art() -> Any:
+        if not media or not media.art:
+            return jsonify({"error": "no album art"}), 404
+        resp = app.response_class(media.art, mimetype="image/jpeg")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.post("/api/media/<cmd>")
+    def api_media_command(cmd: str) -> Any:
+        """play_pause, play, pause, next, previous, vol_up, vol_down, mute, volume?level=0-100, source."""
+        if not media:
+            return jsonify({"error": "media controls unavailable"}), 503
+        level = request.args.get("level", type=int)
+        try:
+            return jsonify(media.command(cmd, level))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
     @app.get("/api/sensors")
     def api_sensors() -> Any:
@@ -545,7 +580,10 @@ def create_app(monitor: SystemMonitor | None = None, token: str | None = None) -
             "/api/pc": "Current PC metrics; temperatures °C, usages %, frequencies MHz, memory MB, network B/s, uptime seconds.",
             "/api/sensors": "Flattened sensor list; every value carries a unit and availability flag.",
             "/api/status": "Server and per-source availability, errors, and polling interval.",
-            "/api/weather": "Weather for the city in settings.json (Open-Meteo); also included in /api/pc as 'weather'."},
+            "/api/weather": "Weather for the city in settings.json (Open-Meteo); also included in /api/pc as 'weather'.",
+            "/api/media": "Now playing on the PC (title, artist, progress, volume); also in /api/pc as 'media'.",
+            "/api/media/art.jpg": "Album art of the current track, 120x120 JPEG.",
+            "POST /api/media/<cmd>": "play_pause, play, pause, next, previous, vol_up, vol_down, mute, volume?level=0-100, source."},
             "missing_values": "Unavailable readings are JSON null; errors are included in /api/status."})
 
     return app

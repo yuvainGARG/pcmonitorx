@@ -51,16 +51,16 @@ static const char *PAGE_NAMES[] = {"HOME", "PERF", "GPU", "NET", "DISK", "APPS",
 enum Page { P_HOME, P_PERF, P_GPU, P_NET, P_DISK, P_APPS, P_SET, PAGE_COUNT };
 
 enum AppId {
-  A_CLOCK, A_WEATHER, A_STOPWATCH, A_TIMER, A_CALC, A_CALENDAR, A_PROCS, A_CORES, A_SYSTEM, A_PAINT, A_ALERTS, A_PADS,  // tools
+  A_MUSIC, A_CLOCK, A_WEATHER, A_STOPWATCH, A_TIMER, A_CALC, A_CALENDAR, A_PROCS, A_CORES, A_SYSTEM, A_PAINT, A_ALERTS, A_PADS,  // tools
   A_SNAKE, A_BRICKS, A_MERGE, A_HOPPER, A_XO, A_MINES, A_MEMORY, A_REFLEX, A_SIMON, A_SLIDE,                // touch games
   A_DODGE, A_CATCH, A_HIGHWAY, A_SHOOTER, A_COOP, A_CAVE, A_PONG,                                               // tilt games
   APP_COUNT
 };
-static const char *APP_NAMES[] = {"Clock", "Weather", "Stopwatch", "Timer", "Calculator", "Calendar", "Processes", "Cores", "System",
+static const char *APP_NAMES[] = {"Music", "Clock", "Weather", "Stopwatch", "Timer", "Calculator", "Calendar", "Processes", "Cores", "System",
                                   "Paint", "Alerts", "Controllers",
                                   "Snake", "Bricks", "Merge", "Hopper", "XO", "Mines", "Memory", "Reflex", "Simon", "Slide",
                                   "Dodge", "Catch", "Highway", "Shooter", "Co-op", "Cave", "Pong"};
-static const uint16_t APP_COLORS[] = {rgb(0, 190, 255), rgb(90, 170, 255), rgb(80, 160, 255), rgb(255, 190, 40), rgb(255, 150, 40),
+static const uint16_t APP_COLORS[] = {rgb(255, 0, 51), rgb(0, 190, 255), rgb(90, 170, 255), rgb(80, 160, 255), rgb(255, 190, 40), rgb(255, 150, 40),
                                       rgb(240, 240, 245), rgb(0, 210, 190), rgb(90, 200, 255), rgb(160, 170, 200),
                                       rgb(255, 80, 160), rgb(255, 90, 90), rgb(255, 120, 60),
                                       rgb(60, 210, 120), rgb(255, 150, 40), rgb(190, 110, 255), rgb(255, 210, 60),
@@ -133,7 +133,19 @@ struct Metrics {
     struct { char h[3]; float t; int p, c; } hr[12];
     struct { char day[6]; float mx, mn; int p, c; } dy[5];
   } wx;
+  struct Media {  // now playing on the PC (Windows media session), from the server
+    bool have = false, active = false, canPrev = false, canNext = false, muted = false;
+    char app[22] = "", title[96] = "", artist[64] = "", artId[12] = "";
+    int status = 0, vol = -1, sources = 0;  // status 1 playing, 2 paused, 0 other
+    float pos = NAN, dur = NAN;
+    uint32_t posAt = 0;
+  } media;
 } m;
+static uint8_t *artBuf = nullptr;  // album art JPEG (PSRAM), guarded by dataLock
+static size_t artLen = 0;
+static char artLoaded[12] = "";
+enum { MC_NONE, MC_PLAYPAUSE, MC_NEXT, MC_PREV, MC_VOLUME, MC_MUTE, MC_SOURCE };
+static volatile int mediaCmd = MC_NONE, mediaArg = 0;  // set by the Music app, sent by the network task
 
 struct Peaks {
   float cpuTemp, gpuTemp, cpu, gpu, ram, down, up;
@@ -1855,6 +1867,7 @@ static void closeApp() {
 }
 static void appFrame() {
   switch (app) {
+    case A_MUSIC: music::frame(); break;
     case A_CLOCK: clk::frame(); break;
     case A_WEATHER: wx::frame(); break;
     case A_STOPWATCH: sw::frame(); break;
@@ -1888,6 +1901,7 @@ static void appFrame() {
 }
 static void appTap(int x, int y) {
   switch (app) {
+    case A_MUSIC: music::tap(x, y); break;
     case A_CLOCK: clk::tap(x, y); break;
     case A_STOPWATCH: sw::tap(x, y); break;
     case A_TIMER: tmr::tap(x, y); break;
@@ -1932,7 +1946,7 @@ static void appDown(int x, int y) {
 
 // ---------------------------------------------------------------- APPS page (launcher, three sections)
 static const char *SECTION_NAMES[] = {"Tools", "Games", "Tilt"};
-static const int SECTION_FIRST[] = {A_CLOCK, A_SNAKE, A_DODGE, APP_COUNT};
+static const int SECTION_FIRST[] = {A_MUSIC, A_SNAKE, A_DODGE, APP_COUNT};
 static int appsSection = 0;
 static const int SEC_Y = BODY_Y + 3, SEC_H = 24, GRID_Y = BODY_Y + 31, TILE_W = 60, TILE_H = 78;
 
@@ -1942,6 +1956,9 @@ static void drawIcon(int id, int cx, int cy) {
     case A_CLOCK:
       g->fillCircle(cx, cy, 12, K); g->fillCircle(cx, cy, 9, A);
       wline(cx, cy, cx, cy - 7, 1.3f, K); wline(cx, cy, cx + 5, cy, 1.3f, K);
+      break;
+    case A_MUSIC:
+      music::note(cx, cy, C_TEXT);
       break;
     case A_WEATHER:
       g->fillCircle(cx - 5, cy - 5, 8, C_WARN);
@@ -2054,6 +2071,10 @@ static void drawIcon(int id, int cx, int cy) {
       break;
   }
 }
+static int tileH() {
+  int n = SECTION_FIRST[appsSection + 1] - SECTION_FIRST[appsSection], rows = (n + 3) / 4;
+  return min(TILE_H, (TAB_Y - GRID_Y) / max(rows, 1));
+}
 static void pageApps() {
   for (int s = 0; s < 3; s++) {
     int x = 4 + s * 78;
@@ -2065,12 +2086,13 @@ static void pageApps() {
   int first = SECTION_FIRST[appsSection], last = SECTION_FIRST[appsSection + 1];
   for (int i = first; i < last; i++) {
     int k = i - first, c = k % 4, r = k / 4;
-    int x = c * TILE_W, y = GRID_Y + r * TILE_H, cx = x + TILE_W / 2, cy = y + 24;
-    g->fillRoundRect(cx - 21, cy - 21, 42, 42, 11, APP_COLORS[i]);
+    int th = tileH(), box = th >= 70 ? 42 : 38, x = c * TILE_W, y = GRID_Y + r * th, cx = x + TILE_W / 2, cy = y + box / 2 + 3;
+    g->fillRoundRect(cx - box / 2, cy - box / 2, box, box, 11, APP_COLORS[i]);
     drawIcon(i, cx, cy);
-    text(APP_NAMES[i], cx, y + 57, &fonts::Font0, C_TEXT, textdatum_t::middle_center);
-    if (i == A_ALERTS && logUnseen) g->fillCircle(cx + 18, cy - 18, 5, C_BAD);
-    if (i == A_TIMER && tmr::running) g->fillCircle(cx + 18, cy - 18, 5, C_GOOD);
+    text(APP_NAMES[i], cx, cy + box / 2 + 9, &fonts::Font0, C_TEXT, textdatum_t::middle_center);
+    if (i == A_ALERTS && logUnseen) g->fillCircle(cx + box / 2 - 3, cy - box / 2 + 3, 5, C_BAD);
+    if (i == A_TIMER && tmr::running) g->fillCircle(cx + box / 2 - 3, cy - box / 2 + 3, 5, C_GOOD);
+    if (i == A_MUSIC && m.media.status == 1) g->fillCircle(cx + box / 2 - 3, cy - box / 2 + 3, 5, C_GOOD);
   }
   if (appsSection == 2)
     text(pads::any() ? "Controller connected. Tap a game." : "No controller yet: games use your finger.", 120, TAB_Y - 9,
@@ -2081,7 +2103,7 @@ static void appsTap(int x, int y) {
     if (y >= SEC_Y && y < SEC_Y + SEC_H + 2) { appsSection = constrain((x - 4) / 78, 0, 2); dirty = true; }
     return;
   }
-  int i = SECTION_FIRST[appsSection] + ((y - GRID_Y) / TILE_H) * 4 + x / TILE_W;
+  int i = SECTION_FIRST[appsSection] + ((y - GRID_Y) / tileH()) * 4 + x / TILE_W;
   if (i < SECTION_FIRST[appsSection + 1]) openApp(i);
 }
 
@@ -2263,6 +2285,28 @@ static void pushHistory() {
   if (histCount < HIST_N) histCount++;
 }
 
+static void parseMedia(JsonObjectConst md) {
+  auto &x = m.media;
+  x.have = !md.isNull() && (md["available"] | false);
+  if (!x.have) { x.active = false; return; }
+  x.active = md["active"] | false;
+  x.vol = md["volume"] | -1;
+  x.muted = md["muted"] | false;
+  x.sources = md["sources"] | 0;
+  if (!x.active) return;
+  strlcpy(x.app, md["app"] | "", sizeof(x.app));
+  strlcpy(x.title, md["title"] | "", sizeof(x.title));
+  strlcpy(x.artist, md["artist"] | "", sizeof(x.artist));
+  strlcpy(x.artId, md["art_id"] | "", sizeof(x.artId));
+  const char *stt = md["status"] | "";
+  x.status = !strcmp(stt, "playing") ? 1 : !strcmp(stt, "paused") ? 2 : 0;
+  x.pos = num(md["position_s"]);
+  x.dur = num(md["duration_s"]);
+  x.posAt = millis();
+  x.canPrev = md["can_prev"] | false;
+  x.canNext = md["can_next"] | false;
+}
+
 static void parse(const JsonDocument &d, float dtSec, uint32_t latency) {
   JsonObjectConst cpu = d["cpu"], gpu = d["gpu"], mem = d["memory"], net = d["network"];
   m.cpuTemp = num(cpu["temperature_c"]); m.cpuUsage = num(cpu["usage_percent"]); m.cpuFreq = num(cpu["frequency_mhz"]);
@@ -2301,6 +2345,7 @@ static void parse(const JsonDocument &d, float dtSec, uint32_t latency) {
     if (m.coreCount >= MAX_CORES) break;
     m.cores[m.coreCount++] = num(v);
   }
+  parseMedia(d["media"]);
   JsonObjectConst w = d["weather"];
   m.wx.have = !w.isNull();
   if (m.wx.have) {
@@ -2392,10 +2437,76 @@ static void fetchService() {
   }
 }
 
+// Music app: send queued media commands and download album art when the track changes.
+static void mediaService() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  int cmd = mediaCmd;
+  if (cmd != MC_NONE) {
+    mediaCmd = MC_NONE;
+    static const char *NAMES[] = {"", "play_pause", "next", "previous", "volume", "mute", "source"};
+    char url[112];
+    if (cmd == MC_VOLUME) snprintf(url, sizeof(url), "http://%s:%u/api/media/volume?level=%d", net.host, (unsigned)net.port, (int)mediaArg);
+    else snprintf(url, sizeof(url), "http://%s:%u/api/media/%s", net.host, (unsigned)net.port, NAMES[cmd]);
+    WiFiClient client;
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_TIMEOUT_MS);
+    http.setTimeout(5000);
+    if (http.begin(client, url)) {
+      if (strlen(PCMONITORX_API_TOKEN)) http.addHeader("Authorization", String("Bearer ") + PCMONITORX_API_TOKEN);
+      int code = http.POST("");
+      if (code == HTTP_CODE_OK) {
+        JsonDocument doc;
+        if (!deserializeJson(doc, http.getString())) {
+          xSemaphoreTake(dataLock, portMAX_DELAY);
+          parseMedia(doc.as<JsonObjectConst>());
+          xSemaphoreGive(dataLock);
+        }
+      } else {
+        Serial.printf("[media] %s -> HTTP %d\n", NAMES[cmd], code);
+      }
+      http.end();
+    }
+    dirty = true;
+  }
+  const char *want = m.media.active ? m.media.artId : "";
+  if (!strcmp(want, artLoaded)) return;
+  char id[12];
+  strlcpy(id, want, sizeof(id));
+  uint8_t *buf = nullptr;
+  size_t len = 0;
+  if (id[0]) {
+    char url[96];
+    snprintf(url, sizeof(url), "http://%s:%u/api/media/art.jpg", net.host, (unsigned)net.port);
+    WiFiClient client;
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_TIMEOUT_MS);
+    http.setTimeout(3000);
+    if (http.begin(client, url)) {
+      if (strlen(PCMONITORX_API_TOKEN)) http.addHeader("Authorization", String("Bearer ") + PCMONITORX_API_TOKEN);
+      if (http.GET() == HTTP_CODE_OK) {
+        int size = http.getSize();
+        if (size > 0 && size < 48000 && (buf = (uint8_t *)ps_malloc(size))) {
+          len = http.getStream().readBytes(buf, size);
+          if ((int)len != size) { free(buf); buf = nullptr; len = 0; }
+        }
+      }
+      http.end();
+    }
+  }
+  xSemaphoreTake(dataLock, portMAX_DELAY);
+  free(artBuf);
+  artBuf = buf;
+  artLen = len;
+  strlcpy(artLoaded, id, sizeof(artLoaded));
+  xSemaphoreGive(dataLock);
+  dirty = true;
+}
+
 static void netTask(void *) {
   for (;;) {
     wifiService();
     fetchService();
+    mediaService();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

@@ -76,7 +76,8 @@ Open an app from the APPS tab. To go back, tap the `<` at the top left, press BO
 
 | Section | App | What it does |
 |---|---|---|
-| Tools | Clock | Digital (with seconds and a CPU/GPU/RAM/net summary) or analog; tap to switch |
+| Tools | Music | Remote for whatever is playing on the PC (YouTube Music or YouTube in a browser, the YouTube Music app, Spotify, ...): album art, title/artist, progress, previous / play-pause / next, volume slider and mute. Tap the app name (top right) to switch between apps that have media. Uses Windows' media controls through the PC server |
+| | Clock | Digital (with seconds and a CPU/GPU/RAM/net summary) or analog; tap to switch |
 | | Weather | Now (icon, temperature, feels like, humidity, wind), next 12 hours graph with rain chance, next 5 days. The city is set on the PC (see Server changes) |
 | | Stopwatch | Start/stop, laps with splits |
 | | Timer | 1/5/10/25 min presets, ±10 s / ±1 min, pause. When it ends the screen flashes and the Timer opens from anywhere; the header shows the countdown while it runs |
@@ -163,6 +164,11 @@ touch panel can't block start-up.
   in a background thread with one `NtQuerySystemInformation` call (about 8 ms); psutil's per-process
   calls took about 2.5 s of CPU per scan on this PC and made requests time out.
 
+- `media`: what's playing on the PC (app, title, artist, status, position, duration, volume) from Windows'
+  media sessions (`windows_server/media.py`). Album art: `GET /api/media/art.jpg` (120x120 JPEG). Controls:
+  `POST /api/media/<cmd>` with `play_pause`, `next`, `previous`, `vol_up`, `vol_down`, `mute`,
+  `volume?level=0-100`, `source`. Needs the optional `winrt-*`, `pycaw` and `pillow` packages
+  (in `requirements.txt`); set `PCMONITORX_MEDIA=0` to turn it off.
 - `weather`: current conditions, 12 hourly and 5 daily forecasts for the city in
   `windows_server/settings.json` (`{"weather_city": "London"}`, git-ignored; copy
   `settings.example.json`). Fetched from Open-Meteo (free, no key) every 10 minutes in the background;
